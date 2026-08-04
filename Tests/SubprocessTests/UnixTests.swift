@@ -1538,15 +1538,18 @@ extension SubprocessUnixTests {
         try #require(tcsetattr(replicaFD, TCSANOW, &settings) == 0, "tcsetattr failed: \(errno)")
 
         let payload = "pty stdin works"
-        // Pre-fill the pty buffer; the child reads exactly this many bytes and
-        // then exits, closing its inherited replica.
-        try Array(payload.utf8).withUnsafeBytes { buffer in
+        // Pre-fill the pty buffer with a single newline-terminated line; the
+        // child reads that line and then exits, closing its inherited replica.
+        // `cfmakeraw` cleared `ICRNL`, so the newline arrives verbatim.
+        try Array("\(payload)\n".utf8).withUnsafeBytes { buffer in
             _ = try primary.write(buffer)
         }
 
         let result = try await Subprocess.run(
             .name("head"),
-            arguments: ["-c", "\(payload.utf8.count)"],
+            // A line count rather than a byte count because OpenBSD's `head`
+            // implements only `-n`.
+            arguments: ["-n", "1"],
             // The replica is owned by Subprocess (closed after spawn); we keep
             // and close the primary ourselves.
             input: .fileDescriptor(replica, closeAfterSpawningProcess: true),
