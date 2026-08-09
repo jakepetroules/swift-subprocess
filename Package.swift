@@ -60,7 +60,10 @@ let package = Package(
                 "TestResources",
                 .product(name: "SystemPackage", package: "swift-system"),
             ],
-            swiftSettings: packageSwiftSettings
+            swiftSettings: packageSwiftSettings,
+            linkerSettings: [
+                .linkedLibrary("util", .when(platforms: [.openbsd])) // for openpty
+            ]
         ),
 
         .target(
