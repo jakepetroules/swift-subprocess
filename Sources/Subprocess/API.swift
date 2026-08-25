@@ -368,6 +368,18 @@ public func run<
                 outputStream: outputSequence,
                 errorStream: errorSequence
             )
+            defer {
+                // `execution` (and the `.sequence` streams it exposes) is
+                // only valid for the duration of `body`. If `body` returns
+                // or throws without fully draining `outputSequence`/
+                // `errorSequence` -- for example, breaking out of a
+                // `for await` loop early -- their underlying pipe
+                // descriptors are otherwise never closed. `closeIfNeeded()`
+                // is a no-op if the sequence's own iterator already closed
+                // it by reaching end-of-stream.
+                try? outputSequence?.closeIfNeeded()
+                try? errorSequence?.closeIfNeeded()
+            }
             do {
                 resultBox = try await body(execution)
             } catch {

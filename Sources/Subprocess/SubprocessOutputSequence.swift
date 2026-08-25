@@ -63,11 +63,13 @@ public struct SubprocessOutputSequence: AsyncSequence, @unchecked Sendable {
         private let processIdentifier: ProcessIdentifier
         private let preferredBufferSize: Int
         private var buffer: [Buffer]
+        private let closeGate: AtomicCounter
 
-        internal init(diskIO: DiskIO, processIdentifier: ProcessIdentifier) {
+        internal init(diskIO: DiskIO, processIdentifier: ProcessIdentifier, closeGate: AtomicCounter) {
             self.diskIO = diskIO
             self.processIdentifier = processIdentifier
             self.buffer = []
+            self.closeGate = closeGate
             // Only need to query it once at beginning of stream
             self.preferredBufferSize = AsyncIO.queryPipeBufferSize(for: diskIO)
         }
@@ -85,12 +87,16 @@ public struct SubprocessOutputSequence: AsyncSequence, @unchecked Sendable {
                 upTo: self.preferredBufferSize
             )
             guard let data else {
-                // We finished reading. Close the file descriptor now
-                #if canImport(WinSDK)
-                try _safelyClose(.handle(self.diskIO))
-                #else
-                try _safelyClose(.fileDescriptor(self.diskIO))
-                #endif
+                // We finished reading. Close the file descriptor now, unless
+                // `SubprocessOutputSequence.closeIfNeeded()` already did (see
+                // that method for why both sides can race to close this).
+                if self.closeGate.addOne() == 1 {
+                    #if canImport(WinSDK)
+                    try _safelyClose(.handle(self.diskIO))
+                    #else
+                    try _safelyClose(.fileDescriptor(self.diskIO))
+                    #endif
+                }
                 return nil
             }
             return Buffer(data: data)
@@ -105,11 +111,13 @@ public struct SubprocessOutputSequence: AsyncSequence, @unchecked Sendable {
     private let diskIO: DiskIO
     private let processIdentifier: ProcessIdentifier
     private let state: State
+    private let closeGate: AtomicCounter
 
     internal init(diskIO: DiskIO, processIdentifier: ProcessIdentifier) {
         self.diskIO = diskIO
         self.processIdentifier = processIdentifier
         self.state = State()
+        self.closeGate = AtomicCounter()
     }
 
     /// Creates an iterator for this asynchronous sequence.
@@ -120,7 +128,27 @@ public struct SubprocessOutputSequence: AsyncSequence, @unchecked Sendable {
         guard self.state.initializedCount() == 1 else {
             fatalError("SubprocessOutputSequence is single-pass. It can only be iterated once.")
         }
-        return Iterator(diskIO: self.diskIO, processIdentifier: self.processIdentifier)
+        return Iterator(diskIO: self.diskIO, processIdentifier: self.processIdentifier, closeGate: self.closeGate)
+    }
+
+    /// Closes the underlying descriptor if the iterator hasn't already
+    /// closed it by reaching end-of-stream.
+    ///
+    /// `run` calls this once the body closure that received this sequence
+    /// returns, so a caller that stops consuming the sequence before it
+    /// reaches end-of-stream (for example, `break`ing out of a `for await`
+    /// loop early) doesn't leak the underlying pipe descriptor. Safe to call
+    /// whether or not the sequence was ever iterated, or was fully drained.
+    internal func closeIfNeeded() throws(SubprocessError) {
+        guard self.closeGate.addOne() == 1 else {
+            // The iterator already closed it upon reaching end-of-stream.
+            return
+        }
+        #if canImport(WinSDK)
+        try _safelyClose(.handle(self.diskIO))
+        #else
+        try _safelyClose(.fileDescriptor(self.diskIO))
+        #endif
     }
 
     /// Splits the buffer into strings using the specified separator.
