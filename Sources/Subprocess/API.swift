@@ -368,26 +368,25 @@ public func run<
                 outputStream: outputSequence,
                 errorStream: errorSequence
             )
-            defer {
-                // `execution` (and the `.sequence` streams it exposes) is
-                // only valid for the duration of `body`. If `body` returns
-                // or throws without fully draining `outputSequence`/
-                // `errorSequence` -- for example, breaking out of a
-                // `for await` loop early -- their underlying pipe
-                // descriptors are otherwise never closed. `closeIfNeeded()`
-                // is a no-op if the sequence's own iterator already closed
-                // it by reaching end-of-stream.
-                try? outputSequence?.closeIfNeeded()
-                try? errorSequence?.closeIfNeeded()
-            }
             do {
                 resultBox = try await body(execution)
             } catch {
+                // `execution` (and the `.sequence` streams it exposes) is only
+                // valid for the duration of `body`. Close its streams now,
+                // whether or not `body` fully drained them -- for example,
+                // by breaking out of a `for await` loop early -- so their
+                // underlying pipe descriptors aren't leaked. Not a `defer`:
+                // a future asynchronous close implementation needs an async
+                // context, which a `defer` body can't provide.
+                try? outputSequence?.close()
+                try? errorSequence?.close()
                 if Input.self == CustomWriteInput.self {
                     try await writer?.finish()
                 }
                 throw error
             }
+            try? outputSequence?.close()
+            try? errorSequence?.close()
             if Input.self == CustomWriteInput.self {
                 try await writer?.finish()
             }
