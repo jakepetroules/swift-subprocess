@@ -404,10 +404,15 @@ extension SubprocessProcessMonitoringTests {
 
     /// Allocates a buffer of `bytes` by asking `dd` for it as a single block.
     /// The byte count is spelled out because `dd` suffix syntax isn't portable.
+    ///
+    /// The block is copied repeatedly so the buffer stays resident for a while
+    /// rather than for a single copy. FreeBSD samples resident memory on clock
+    /// ticks instead of tracking a high-water mark on every fault, so a child
+    /// that touches its buffer once and exits can report a fraction of it.
     private func allocatingProcess(bytes: Int) -> Configuration {
         return Configuration(
             executable: .path("/bin/dd"),
-            arguments: ["if=/dev/zero", "of=/dev/null", "bs=\(bytes)", "count=1"]
+            arguments: ["if=/dev/zero", "of=/dev/null", "bs=\(bytes)", "count=64"]
         )
     }
 
